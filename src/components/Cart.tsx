@@ -2,24 +2,49 @@ import { useState } from "react";
 import type { CartLine } from "../lib/cart";
 import { MENU } from "../lib/menu";
 import { bestCouponFor, calculateBill, couponOptionsFor } from "../lib/pricing";
+import { useAuth } from "../context/AuthContext";
 
 interface Props {
   cart: CartLine[];
   onChange: (id: number, delta: number) => void;
   onClose: () => void;
-  onOrderPlaced: (total: number) => void;
+  onOrderPlaced: (total: number) => Promise<string | void> | void;
+  onOpenAuth?: () => void;
 }
 
-export default function Cart({ cart, onChange, onClose, onOrderPlaced }: Props) {
+export default function Cart({ cart, onChange, onClose, onOrderPlaced, onOpenAuth }: Props) {
+  const { user } = useAuth();
   const [coupon, setCoupon] = useState("");
-  const [orderNumber, setOrderNumber] = useState<number | null>(null);
+  const [orderNumber, setOrderNumber] = useState<string | number | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const bill = calculateBill(cart, MENU, coupon);
   const couponOptions = couponOptionsFor(bill.subtotal);
   const bestCoupon = bestCouponFor(bill.subtotal);
 
-  function placeOrder() {
-    setOrderNumber(Math.floor(1000 + Math.random() * 9000));
-    onOrderPlaced(bill.total);
+  async function placeOrder() {
+    if (!user) {
+      onOpenAuth?.();
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const generatedOrderRef = await onOrderPlaced(bill.total);
+      const displayId = generatedOrderRef
+        ? (typeof generatedOrderRef === "string" && generatedOrderRef.length > 8
+            ? generatedOrderRef.slice(0, 8)
+            : generatedOrderRef)
+        : Math.floor(1000 + Math.random() * 9000);
+      setOrderNumber(displayId);
+    } catch (err: unknown) {
+      console.error("Order placement failed:", err);
+      setError("Failed to place order. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -104,7 +129,29 @@ export default function Cart({ cart, onChange, onClose, onOrderPlaced }: Props) 
               <dt>GST (5%)</dt><dd>₹{bill.gst.toFixed(2)}</dd>
               <dt className="total">Total</dt><dd className="total">₹{bill.total.toFixed(2)}</dd>
             </dl>
-            <button className="place-order" onClick={placeOrder}>Place order</button>
+
+            {error && <p className="auth-error" style={{ marginBottom: "12px" }}>{error}</p>}
+
+            {!user ? (
+              <div className="checkout-auth-prompt">
+                <p>🔒 College ID required to place order</p>
+                <button
+                  type="button"
+                  className="place-order auth-required-btn"
+                  onClick={onOpenAuth}
+                >
+                  Log in to Place Order
+                </button>
+              </div>
+            ) : (
+              <button
+                className="place-order"
+                onClick={placeOrder}
+                disabled={submitting}
+              >
+                {submitting ? "Placing order..." : "Place order"}
+              </button>
+            )}
           </>
         )}
       </aside>

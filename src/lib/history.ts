@@ -5,6 +5,7 @@ export interface Order {
   items: CartLine[];
   total: number;
   placedAt: string;
+  status?: string;
 }
 
 function normalizeCartLine(value: unknown): CartLine | null {
@@ -35,7 +36,8 @@ function normalizeOrder(value: unknown): Order | null {
 
   const items = normalizeCart(order.items);
   if (items.length === 0) return null;
-  return { id: order.id, items, total: order.total, placedAt: order.placedAt };
+  const status = typeof order.status === "string" ? order.status : undefined;
+  return { id: order.id, items, total: order.total, placedAt: order.placedAt, ...(status ? { status } : {}) };
 }
 
 export function newestFirst(orders: Order[]): Order[] {
@@ -62,8 +64,20 @@ export function parseCart(raw: string | null): CartLine[] {
   }
 }
 
-export function createOrder(id: string, items: CartLine[], total: number, placedAt: string): Order {
-  return { id, items: items.map((line) => ({ ...line })), total, placedAt };
+export function createOrder(
+  id: string,
+  items: CartLine[],
+  total: number,
+  placedAt: string,
+  status?: string
+): Order {
+  return {
+    id,
+    items: items.map((line) => ({ ...line })),
+    total,
+    placedAt,
+    ...(status ? { status } : {}),
+  };
 }
 
 export function addOrder(history: Order[], order: Order): Order[] {
