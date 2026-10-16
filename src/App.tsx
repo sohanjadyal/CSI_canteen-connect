@@ -3,17 +3,19 @@ import Cart from "./components/Cart";
 import MenuCard from "./components/MenuCard";
 import Orders from "./components/Orders";
 import AuthModal from "./components/AuthModal";
+import AdminDashboard from "./components/admin/AdminDashboard";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { addToCart, changeQty, itemCount, type CartLine } from "./lib/cart";
 import { createOrder, mergeOrders, orderToCart, parseCart, parseHistory, type Order } from "./lib/history";
 import { CATEGORIES, filterMenu, MENU, sortMenu, type Category, type SortOrder } from "./lib/menu";
 import { saveOrderToDatabase, subscribeUserOrders } from "./lib/orders";
+import { getEffectiveMenu, subscribeMenuStock, type StockOverrides } from "./lib/admin";
 
 const CART_KEY = "canteen-cart";
 const ORDERS_KEY = "canteen-orders";
 
 function CanteenApp() {
-  const { user, logout } = useAuth();
+  const { user, isAdmin, logout } = useAuth();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<Category | "All">("All");
   const [vegOnly, setVegOnly] = useState(false);
@@ -21,7 +23,8 @@ function CanteenApp() {
   const [cart, setCart] = useState<CartLine[]>(() => parseCart(localStorage.getItem(CART_KEY)));
   const [orders, setOrders] = useState<Order[]>(() => parseHistory(localStorage.getItem(ORDERS_KEY)));
   const [cartOpen, setCartOpen] = useState(false);
-  const [view, setView] = useState<"menu" | "orders">("menu");
+  const [view, setView] = useState<"menu" | "orders" | "admin">("menu");
+  const [stockOverrides, setStockOverrides] = useState<StockOverrides>({});
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | undefined>();
@@ -62,6 +65,14 @@ function CanteenApp() {
     return () => unsubscribe();
   }, [user]);
 
+  // Sync menu stock availability in real time
+  useEffect(() => {
+    const unsubscribe = subscribeMenuStock((overrides) => {
+      setStockOverrides(overrides);
+    });
+    return () => unsubscribe();
+  }, []);
+
   function openAuth(notice?: string, mode: "login" | "signup" = "login") {
     setAuthNotice(notice);
     setAuthMode(mode);
@@ -100,21 +111,41 @@ function CanteenApp() {
     setCartOpen(true);
   }
 
-  const items = filterMenu(sortMenu(MENU, sort), { query, category, vegOnly });
+  const effectiveMenu = getEffectiveMenu(MENU, stockOverrides);
+  const items = filterMenu(sortMenu(effectiveMenu, sort), { query, category, vegOnly });
 
   return (
     <>
       <header className="header">
-        <h1>Canteen Connect</h1>
+        <h1 onClick={() => setView("menu")} style={{ cursor: "pointer" }} title="Back to menu">
+          Canteen Connect
+        </h1>
         <div className="header-actions">
-          <button className="header-link" onClick={() => setView(view === "menu" ? "orders" : "menu")}>
-            {view === "menu" ? "Orders" : "Menu"}
+          <button
+            className={`header-link ${view === "menu" ? "header-link-active" : ""}`}
+            onClick={() => setView("menu")}
+          >
+            Menu
           </button>
+          <button
+            className={`header-link ${view === "orders" ? "header-link-active" : ""}`}
+            onClick={() => setView("orders")}
+          >
+            Orders
+          </button>
+          {isAdmin && (
+            <button
+              className={`header-link admin-nav-btn ${view === "admin" ? "header-link-active" : ""}`}
+              onClick={() => setView("admin")}
+            >
+              🛡️ Admin Dashboard
+            </button>
+          )}
 
           {user ? (
             <div className="header-auth">
               <span className="user-pill" title={user.email || ""}>
-                👤 {user.email?.split("@")[0]}
+                {isAdmin ? "🛡️" : "👤"} {user.email?.split("@")[0]}
               </span>
               <button className="auth-btn logout" onClick={() => logout()}>
                 Log out
@@ -133,7 +164,12 @@ function CanteenApp() {
       </header>
 
       <main className="page">
-        {view === "orders" ? (
+        {view === "admin" ? (
+          <AdminDashboard
+            onBackToMenu={() => setView("menu")}
+            onOpenAuth={(notice) => openAuth(notice)}
+          />
+        ) : view === "orders" ? (
           <Orders
             orders={orders}
             onReorder={reorder}
@@ -191,6 +227,7 @@ function CanteenApp() {
       {cartOpen && (
         <Cart
           cart={cart}
+          menu={effectiveMenu}
           onChange={(id, delta) => setCart(changeQty(cart, id, delta))}
           onClose={() => setCartOpen(false)}
           onOrderPlaced={placeOrder}

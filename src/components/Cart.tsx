@@ -1,25 +1,26 @@
 import { useState } from "react";
 import type { CartLine } from "../lib/cart";
-import { MENU } from "../lib/menu";
+import { MENU, type MenuItem } from "../lib/menu";
 import { bestCouponFor, calculateBill, couponOptionsFor } from "../lib/pricing";
 import { useAuth } from "../context/AuthContext";
 
 interface Props {
   cart: CartLine[];
+  menu?: MenuItem[];
   onChange: (id: number, delta: number) => void;
   onClose: () => void;
   onOrderPlaced: (total: number) => Promise<string | void> | void;
   onOpenAuth?: () => void;
 }
 
-export default function Cart({ cart, onChange, onClose, onOrderPlaced, onOpenAuth }: Props) {
+export default function Cart({ cart, menu = MENU, onChange, onClose, onOrderPlaced, onOpenAuth }: Props) {
   const { user } = useAuth();
   const [coupon, setCoupon] = useState("");
   const [orderNumber, setOrderNumber] = useState<string | number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const bill = calculateBill(cart, MENU, coupon);
+  const bill = calculateBill(cart, menu, coupon);
   const couponOptions = couponOptionsFor(bill.subtotal);
   const bestCoupon = bestCouponFor(bill.subtotal);
 
@@ -66,7 +67,7 @@ export default function Cart({ cart, onChange, onClose, onOrderPlaced, onOpenAut
           <>
             <ul className="lines">
               {cart.map((line) => {
-                const item = MENU.find((m) => m.id === line.id);
+                const item = menu.find((m) => m.id === line.id);
                 if (!item) return null;
                 return (
                   <li key={line.id}>

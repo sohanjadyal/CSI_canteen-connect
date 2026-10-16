@@ -10,10 +10,11 @@ import {
   type UserCredential,
 } from "firebase/auth";
 import { auth } from "../lib/firebase";
-import { isCollegeEmail } from "../lib/auth-validation";
+import { isCollegeEmail, isAdminEmail } from "../lib/auth-validation";
 
 export interface AuthContextType {
   user: User | null;
+  isAdmin: boolean;
   loading: boolean;
   signup: (email: string, password: string) => Promise<UserCredential>;
   login: (email: string, password: string) => Promise<UserCredential>;
@@ -68,8 +69,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return signOut(auth);
   }
 
+  const isAdmin = Boolean(user && isAdminEmail(user.email));
+
   return (
-    <AuthContext.Provider value={{ user, loading, signup, login, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, isAdmin, loading, signup, login, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );
