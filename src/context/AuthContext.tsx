@@ -10,7 +10,7 @@ import {
   type UserCredential,
 } from "firebase/auth";
 import { auth } from "../lib/firebase";
-import { isCollegeEmail, isAdminEmail } from "../lib/auth-validation";
+import { isCollegeEmail, isVerifiedAdminUser } from "../lib/auth-validation";
 
 export interface AuthContextType {
   user: User | null;
@@ -69,7 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return signOut(auth);
   }
 
-  const isAdmin = Boolean(user && isAdminEmail(user.email));
+  const isAdmin = isVerifiedAdminUser(user);
 
   return (
     <AuthContext.Provider value={{ user, isAdmin, loading, signup, login, loginWithGoogle, logout }}>

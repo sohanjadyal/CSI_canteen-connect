@@ -1,4 +1,63 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock Firestore functions
+const mockUpdateDoc = vi.fn().mockResolvedValue(undefined);
+const mockSetDoc = vi.fn().mockResolvedValue(undefined);
+const mockDoc = vi.fn((_db: unknown, collection: string, id: string) => ({
+  path: `${collection}/${id}`,
+  id,
+}));
+const mockServerTimestamp = vi.fn(() => "MOCK_TIMESTAMP");
+
+vi.mock("firebase/firestore", async () => {
+  const actual = await vi.importActual<typeof import("firebase/firestore")>("firebase/firestore");
+  return {
+    ...actual,
+    doc: (...args: unknown[]) => mockDoc(...(args as [unknown, string, string])),
+    updateDoc: (...args: unknown[]) => mockUpdateDoc(...args),
+    setDoc: (...args: unknown[]) => mockSetDoc(...args),
+    serverTimestamp: () => mockServerTimestamp(),
+    onSnapshot: vi.fn(),
+  };
+});
+
+vi.mock("./firebase", () => ({
+  db: { _mockDb: true },
+  isFirebaseConfigured: true,
+}));
+
+// Mock localStorage and window events in test environment
+const mockStorage = new Map<string, string>();
+const storageMock: Storage = {
+  getItem: (key: string) => mockStorage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    mockStorage.set(key, String(value));
+  },
+  removeItem: (key: string) => {
+    mockStorage.delete(key);
+  },
+  clear: () => {
+    mockStorage.clear();
+  },
+  key: (index: number) => Array.from(mockStorage.keys())[index] ?? null,
+  length: 0,
+};
+
+Object.defineProperty(globalThis, "localStorage", {
+  value: storageMock,
+  writable: true,
+  configurable: true,
+});
+
+if (typeof globalThis.window === "undefined") {
+  (globalThis as unknown as { window: unknown }).window = globalThis;
+}
+
+const dispatchSpy = vi.fn();
+if (typeof window !== "undefined") {
+  window.dispatchEvent = dispatchSpy as unknown as typeof window.dispatchEvent;
+}
+
 import {
   calculateAnalyticsMetrics,
   getEffectiveMenu,
@@ -6,25 +65,50 @@ import {
   isSameDay,
   isValidStatusTransition,
   normalizeOrderStatus,
+  setItemStockAvailable,
+  updateOrderStatus,
 } from "./admin";
-import { isAdminEmail, getAdminEmails } from "./auth-validation";
+import { isAdminEmail, getAdminEmails, isVerifiedAdminUser } from "./auth-validation";
 import type { Order } from "./history";
 import type { MenuItem } from "./menu";
 
 describe("admin authorization (RBAC)", () => {
-  it("identifies default staff/admin emails", () => {
+  const originalEnv = import.meta.env.VITE_ADMIN_EMAILS;
+
+  beforeEach(() => {
+    delete (import.meta.env as Record<string, unknown>).VITE_ADMIN_EMAILS;
+  });
+
+  afterEach(() => {
+    if (originalEnv !== undefined) {
+      import.meta.env.VITE_ADMIN_EMAILS = originalEnv;
+    } else {
+      delete (import.meta.env as Record<string, unknown>).VITE_ADMIN_EMAILS;
+    }
+  });
+
+  it("returns empty admin list when VITE_ADMIN_EMAILS is not configured", () => {
+    expect(getAdminEmails()).toEqual([]);
+    expect(isAdminEmail("canteen@spit.ac.in")).toBe(false);
+    expect(isAdminEmail("admin@spit.ac.in")).toBe(false);
+  });
+
+  it("identifies authorized admin emails from environment variable", () => {
+    import.meta.env.VITE_ADMIN_EMAILS = "canteen@spit.ac.in,admin@spit.ac.in,staff@spit.ac.in";
+    expect(getAdminEmails()).toEqual(["canteen@spit.ac.in", "admin@spit.ac.in", "staff@spit.ac.in"]);
     expect(isAdminEmail("canteen@spit.ac.in")).toBe(true);
     expect(isAdminEmail("admin@spit.ac.in")).toBe(true);
     expect(isAdminEmail("staff@spit.ac.in")).toBe(true);
-    expect(isAdminEmail("canteenadmin@spit.ac.in")).toBe(true);
   });
 
   it("handles case-insensitivity and trimming in admin emails", () => {
+    import.meta.env.VITE_ADMIN_EMAILS = "canteen@spit.ac.in,admin@spit.ac.in";
     expect(isAdminEmail(" CANTEEN@SPIT.AC.IN ")).toBe(true);
     expect(isAdminEmail("Admin@Spit.Ac.In")).toBe(true);
   });
 
   it("rejects regular student emails from admin access", () => {
+    import.meta.env.VITE_ADMIN_EMAILS = "canteen@spit.ac.in";
     expect(isAdminEmail("student@spit.ac.in")).toBe(false);
     expect(isAdminEmail("sohan.jadyal@spit.ac.in")).toBe(false);
     expect(isAdminEmail("random@gmail.com")).toBe(false);
@@ -33,10 +117,22 @@ describe("admin authorization (RBAC)", () => {
     expect(isAdminEmail(undefined)).toBe(false);
   });
 
-  it("returns list of default admin emails when env var is not set", () => {
-    const emails = getAdminEmails();
-    expect(emails).toContain("canteen@spit.ac.in");
-    expect(emails).toContain("admin@spit.ac.in");
+  it("requires email verification for verified admin status (isVerifiedAdminUser)", () => {
+    import.meta.env.VITE_ADMIN_EMAILS = "canteen@spit.ac.in,admin@spit.ac.in";
+
+    // Valid admin with verified email -> allowed
+    expect(isVerifiedAdminUser({ email: "canteen@spit.ac.in", emailVerified: true })).toBe(true);
+    expect(isVerifiedAdminUser({ email: "admin@spit.ac.in", emailVerified: true })).toBe(true);
+
+    // Unverified admin email -> rejected (prevents unverified signup hijack)
+    expect(isVerifiedAdminUser({ email: "canteen@spit.ac.in", emailVerified: false })).toBe(false);
+
+    // Student account even if verified -> rejected
+    expect(isVerifiedAdminUser({ email: "student@spit.ac.in", emailVerified: true })).toBe(false);
+
+    // Missing user / null
+    expect(isVerifiedAdminUser(null)).toBe(false);
+    expect(isVerifiedAdminUser(undefined)).toBe(false);
   });
 });
 
@@ -196,5 +292,93 @@ describe("dynamic menu stock overrides", () => {
     // Base menu remains untouched
     expect(baseMenu.find((m) => m.id === 1)?.available).toBe(true);
     expect(baseMenu.find((m) => m.id === 2)?.available).toBe(false);
+  });
+});
+
+describe("Firestore functions (updateOrderStatus & setItemStockAvailable)", () => {
+  beforeEach(() => {
+    mockStorage.clear();
+    dispatchSpy.mockClear();
+    mockUpdateDoc.mockClear();
+    mockSetDoc.mockClear();
+    mockDoc.mockClear();
+  });
+
+  it("updateOrderStatus updates Firestore document with normalized status and serverTimestamp", async () => {
+    const initialOrders: Order[] = [
+      {
+        id: "order-123",
+        items: [{ id: 1, qty: 1 }],
+        total: 60,
+        placedAt: new Date().toISOString(),
+        status: "received",
+      },
+    ];
+    localStorage.setItem("canteen-orders", JSON.stringify(initialOrders));
+
+    await updateOrderStatus("order-123", "ready for pickup");
+
+    // Firestore call checks
+    expect(mockDoc).toHaveBeenCalledWith(expect.anything(), "orders", "order-123");
+    expect(mockUpdateDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "orders/order-123", id: "order-123" }),
+      {
+        status: "ready", // normalized from 'ready for pickup'
+        updatedAt: "MOCK_TIMESTAMP",
+      }
+    );
+
+    // Local storage check
+    const updated = JSON.parse(localStorage.getItem("canteen-orders") || "[]");
+    expect(updated[0].status).toBe("ready");
+
+    // Events dispatch check
+    expect(dispatchSpy).toHaveBeenCalled();
+  });
+
+  it("updateOrderStatus handles Firestore errors gracefully without throwing", async () => {
+    mockUpdateDoc.mockRejectedValueOnce(new Error("Firestore network disconnect"));
+    const initialOrders: Order[] = [
+      {
+        id: "order-456",
+        items: [{ id: 2, qty: 2 }],
+        total: 40,
+        placedAt: new Date().toISOString(),
+        status: "received",
+      },
+    ];
+    localStorage.setItem("canteen-orders", JSON.stringify(initialOrders));
+
+    await expect(updateOrderStatus("order-456", "preparing")).resolves.not.toThrow();
+
+    // Local storage still gets updated as offline fallback
+    const updated = JSON.parse(localStorage.getItem("canteen-orders") || "[]");
+    expect(updated[0].status).toBe("preparing");
+  });
+
+  it("setItemStockAvailable updates local storage and writes to Firestore settings/menu_stock", async () => {
+    const result = await setItemStockAvailable(1, false);
+
+    expect(result).toEqual({ 1: false });
+    expect(JSON.parse(localStorage.getItem("canteen-menu-stock") || "{}")).toEqual({ 1: false });
+
+    expect(mockDoc).toHaveBeenCalledWith(expect.anything(), "settings", "menu_stock");
+    expect(mockSetDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "settings/menu_stock", id: "menu_stock" }),
+      {
+        overrides: { 1: false },
+        updatedAt: "MOCK_TIMESTAMP",
+      },
+      { merge: true }
+    );
+    expect(dispatchSpy).toHaveBeenCalled();
+  });
+
+  it("setItemStockAvailable handles Firestore write failures gracefully", async () => {
+    mockSetDoc.mockRejectedValueOnce(new Error("Firestore permission denied"));
+
+    const result = await setItemStockAvailable(2, true);
+    expect(result[2]).toBe(true);
+    expect(JSON.parse(localStorage.getItem("canteen-menu-stock") || "{}")[2]).toBe(true);
   });
 });

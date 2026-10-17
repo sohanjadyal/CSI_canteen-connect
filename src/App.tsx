@@ -117,28 +117,17 @@ function CanteenApp() {
   return (
     <>
       <header className="header">
-        <h1 onClick={() => setView("menu")} style={{ cursor: "pointer" }} title="Back to menu">
-          Canteen Connect
-        </h1>
+        <h1>Canteen Connect</h1>
         <div className="header-actions">
-          <button
-            className={`header-link ${view === "menu" ? "header-link-active" : ""}`}
-            onClick={() => setView("menu")}
-          >
-            Menu
-          </button>
-          <button
-            className={`header-link ${view === "orders" ? "header-link-active" : ""}`}
-            onClick={() => setView("orders")}
-          >
-            Orders
+          <button className="header-link" onClick={() => setView(view === "menu" ? "orders" : "menu")}>
+            {view === "menu" ? "Orders" : "Menu"}
           </button>
           {isAdmin && (
             <button
               className={`header-link admin-nav-btn ${view === "admin" ? "header-link-active" : ""}`}
-              onClick={() => setView("admin")}
+              onClick={() => setView(view === "admin" ? "menu" : "admin")}
             >
-              🛡️ Admin Dashboard
+              {view === "admin" ? "Menu" : "Admin"}
             </button>
           )}
 
