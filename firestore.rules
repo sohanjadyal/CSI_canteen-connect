@@ -23,7 +23,10 @@ service cloud.firestore {
     // Orders Collection
     match /orders/{orderId} {
       // Students can create orders tied to their own authenticated UID
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      // New orders can only be pending, not paid
+      allow create: if request.auth != null &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.paymentStatus == 'pending';
 
       // Students can read their own orders; verified admins can read all orders
       allow read: if request.auth != null && (

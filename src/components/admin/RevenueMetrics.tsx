@@ -396,6 +396,37 @@ export default function RevenueMetrics({ orders, menu = MENU }: Props) {
           </div>
         </section>
       </div>
+
+      {/* Payment Channels Breakdown */}
+      <section className="analytics-section payment-analytics-section" style={{ marginTop: "20px" }}>
+        <div className="section-header">
+          <h3>💳 Payment Channels & Settlement</h3>
+          <span className="section-subtitle">Revenue and volume by checkout method</span>
+        </div>
+
+        <div className="payment-channels-grid">
+          <div className="channel-card channel-upi">
+            <div className="channel-icon">⚡</div>
+            <div className="channel-info">
+              <h4>Instant UPI QR</h4>
+              <div className="channel-revenue">₹{(metrics.revenueByPaymentMethod?.upi || 0).toFixed(2)}</div>
+              <span className="channel-orders">{metrics.ordersByPaymentMethod?.upi || 0} orders</span>
+            </div>
+          </div>
+
+          <div className="channel-card channel-counter">
+            <div className="channel-icon">💵</div>
+            <div className="channel-info">
+              <h4>Pay at Counter</h4>
+              <div className="channel-revenue">₹{(metrics.revenueByPaymentMethod?.counter || 0).toFixed(2)}</div>
+              <span className="channel-orders">
+                {metrics.ordersByPaymentMethod?.counter || 0} orders
+                {metrics.pendingCounterRevenue > 0 && ` (₹${metrics.pendingCounterRevenue.toFixed(0)} pending pickup)`}
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

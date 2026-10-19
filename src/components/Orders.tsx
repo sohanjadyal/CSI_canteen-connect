@@ -32,13 +32,28 @@ export default function Orders({ orders, onReorder, userEmail, onOpenAuth }: Pro
                 <div>
                   <div className="order-title-row">
                     <h2>Order #{order.id.length > 8 ? order.id.slice(0, 8) : order.id}</h2>
-                    <span className={`order-status-badge status-${(order.status || "received").toLowerCase()}`}>
-                      {order.status || "received"}
-                    </span>
+                    <div className="order-badges-group">
+                      <span className={`order-status-badge status-${(order.status || "received").toLowerCase()}`}>
+                        {order.status || "received"}
+                      </span>
+                      {order.paymentStatus === "paid" ? (
+                        <span className={`payment-status-badge paid-${order.paymentMethod || "paid"}`}>
+                          🟢 Paid ({order.paymentMethod === "upi" ? "UPI" : "Counter"})
+                        </span>
+                      ) : (
+                        <span className="payment-status-badge pending-counter">
+                          {order.paymentMethod === "upi"
+                            ? `🟡 UPI ₹${order.total.toFixed(2)} (Pending Verification)`
+                            : `🟡 Pay ₹${order.total.toFixed(2)} at Counter`}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <time dateTime={order.placedAt}>{new Date(order.placedAt).toLocaleString()}</time>
                 </div>
-                <strong>₹{order.total.toFixed(2)}</strong>
+                <div className="order-total-block">
+                  <strong>₹{order.total.toFixed(2)}</strong>
+                </div>
               </div>
               <ul className="order-items">
                 {order.items.map((line) => {

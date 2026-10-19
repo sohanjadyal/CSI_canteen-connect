@@ -1,12 +1,17 @@
 import type { CartLine } from "./cart";
 import type { MenuItem } from "./menu";
 
+export type PaymentMethod = "counter" | "upi" | "wallet";
+export type PaymentStatus = "pending" | "paid";
+
 export interface Order {
   id: string;
   items: CartLine[];
   total: number;
   placedAt: string;
   status?: string;
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
 }
 
 function normalizeCartLine(value: unknown): CartLine | null {
@@ -38,7 +43,24 @@ function normalizeOrder(value: unknown): Order | null {
   const items = normalizeCart(order.items);
   if (items.length === 0) return null;
   const status = typeof order.status === "string" ? order.status : undefined;
-  return { id: order.id, items, total: order.total, placedAt: order.placedAt, ...(status ? { status } : {}) };
+  const paymentMethod =
+    order.paymentMethod === "counter" || order.paymentMethod === "upi" || order.paymentMethod === "wallet"
+      ? (order.paymentMethod as PaymentMethod)
+      : undefined;
+  const paymentStatus =
+    order.paymentStatus === "pending" || order.paymentStatus === "paid"
+      ? (order.paymentStatus as PaymentStatus)
+      : undefined;
+
+  return {
+    id: order.id,
+    items,
+    total: order.total,
+    placedAt: order.placedAt,
+    ...(status ? { status } : {}),
+    ...(paymentMethod ? { paymentMethod } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
+  };
 }
 
 export function newestFirst(orders: Order[]): Order[] {
@@ -70,7 +92,9 @@ export function createOrder(
   items: CartLine[],
   total: number,
   placedAt: string,
-  status?: string
+  status?: string,
+  paymentMethod?: PaymentMethod,
+  paymentStatus?: PaymentStatus
 ): Order {
   return {
     id,
@@ -78,6 +102,8 @@ export function createOrder(
     total,
     placedAt,
     ...(status ? { status } : {}),
+    ...(paymentMethod ? { paymentMethod } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
   };
 }
 
@@ -106,6 +132,8 @@ export function mergeOrders(...histories: Order[][]): Order[] {
         order.total === existing.total &&
         order.placedAt === existing.placedAt &&
         order.status === existing.status &&
+        order.paymentMethod === existing.paymentMethod &&
+        order.paymentStatus === existing.paymentStatus &&
         order.items.length === existing.items.length &&
         order.items.every((line, itemIndex) => {
           const existingLine = existing.items[itemIndex];

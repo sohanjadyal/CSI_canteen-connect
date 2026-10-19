@@ -8,7 +8,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { db, isFirebaseConfigured } from "./firebase";
-import { docToOrder } from "./orders";
+import { docToOrder, type PaymentMethod, type PaymentStatus } from "./orders";
 import { parseHistory, type Order } from "./history";
 import { MENU, type MenuItem } from "./menu";
 
@@ -51,6 +51,10 @@ export interface AnalyticsMetrics {
   topSellers: TopSellerItem[];
   revenueByStatus: Record<string, number>;
   ordersByStatus: Record<string, number>;
+  ordersByPaymentMethod: Record<string, number>;
+  revenueByPaymentMethod: Record<string, number>;
+  paidRevenue: number;
+  pendingCounterRevenue: number;
 }
 
 export type StockOverrides = Record<number, boolean>;
@@ -150,12 +154,38 @@ export function calculateAnalyticsMetrics(
     cancelled: 0,
   };
 
+  const ordersByPaymentMethod: Record<string, number> = {
+    upi: 0,
+    counter: 0,
+  };
+
+  const revenueByPaymentMethod: Record<string, number> = {
+    upi: 0,
+    counter: 0,
+  };
+
+  let paidRevenue = 0;
+  let pendingCounterRevenue = 0;
+
   const itemSalesMap = new Map<number, { qty: number; revenue: number }>();
 
   for (const order of orders) {
     const status = normalizeOrderStatus(order.status);
     ordersByStatus[status] = (ordersByStatus[status] || 0) + 1;
     revenueByStatus[status] = (revenueByStatus[status] || 0) + order.total;
+
+    const paymentMethod: PaymentMethod = order.paymentMethod || "counter";
+    const paymentStatus: PaymentStatus =
+      order.paymentStatus || (paymentMethod === "counter" ? "pending" : "pending");
+
+    ordersByPaymentMethod[paymentMethod] = (ordersByPaymentMethod[paymentMethod] || 0) + 1;
+    revenueByPaymentMethod[paymentMethod] = (revenueByPaymentMethod[paymentMethod] || 0) + order.total;
+
+    if (paymentStatus === "paid") {
+      paidRevenue += order.total;
+    } else {
+      pendingCounterRevenue += order.total;
+    }
 
     const orderDate = new Date(order.placedAt);
     const isToday = !Number.isNaN(orderDate.getTime()) && isSameDay(orderDate, referenceDate);
@@ -223,6 +253,10 @@ export function calculateAnalyticsMetrics(
     topSellers,
     revenueByStatus,
     ordersByStatus,
+    ordersByPaymentMethod,
+    revenueByPaymentMethod,
+    paidRevenue: Math.round(paidRevenue * 100) / 100,
+    pendingCounterRevenue: Math.round(pendingCounterRevenue * 100) / 100,
   };
 }
 
@@ -256,6 +290,42 @@ export async function updateOrderStatus(orderId: string, newStatus: string): Pro
     }
   } catch (err) {
     console.warn("Could not update local storage cache:", err);
+  }
+}
+
+/**
+ * Updates an order's payment status in Firestore and in the local cache
+ */
+export async function updateOrderPaymentStatus(
+  orderId: string,
+  newPaymentStatus: PaymentStatus
+): Promise<void> {
+  if (isFirebaseConfigured) {
+    try {
+      const orderRef = doc(db, "orders", orderId);
+      await updateDoc(orderRef, {
+        paymentStatus: newPaymentStatus,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn("Could not update order payment status in Firestore:", err);
+    }
+  }
+
+  // Update local cache for offline/instant local update
+  try {
+    const raw = localStorage.getItem("canteen-orders");
+    if (raw) {
+      const orders = parseHistory(raw);
+      const updated = orders.map((o) =>
+        o.id === orderId ? { ...o, paymentStatus: newPaymentStatus } : o
+      );
+      localStorage.setItem("canteen-orders", JSON.stringify(updated));
+      window.dispatchEvent(new Event("storage"));
+      window.dispatchEvent(new CustomEvent("canteen-orders-updated", { detail: updated }));
+    }
+  } catch (err) {
+    console.warn("Could not update local storage cache for payment status:", err);
   }
 }
 

@@ -8,7 +8,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { addToCart, changeQty, itemCount, type CartLine } from "./lib/cart";
 import { createOrder, mergeOrders, orderToCart, parseCart, parseHistory, type Order } from "./lib/history";
 import { CATEGORIES, filterMenu, MENU, sortMenu, type Category, type SortOrder } from "./lib/menu";
-import { saveOrderToDatabase, subscribeUserOrders } from "./lib/orders";
+import { saveOrderToDatabase, subscribeUserOrders, type PaymentMethod, type PaymentStatus } from "./lib/orders";
 import { getEffectiveMenu, subscribeMenuStock, type StockOverrides } from "./lib/admin";
 
 const CART_KEY = "canteen-cart";
@@ -79,7 +79,11 @@ function CanteenApp() {
     setAuthModalOpen(true);
   }
 
-  async function placeOrder(total: number): Promise<string> {
+  async function placeOrder(
+    total: number,
+    paymentMethod: PaymentMethod = "counter",
+    paymentStatus: PaymentStatus = "pending"
+  ): Promise<string> {
     if (!user) {
       openAuth("Please log in with your college email (@spit.ac.in) to place your order.");
       throw new Error("Authentication required");
@@ -89,9 +93,9 @@ function CanteenApp() {
     let orderId: string = crypto.randomUUID();
 
     try {
-      // Step 5: Save order to database collection 'orders'
-      // containing: userId, items, totalBill, status: 'received', and timestamp
-      const docId = await saveOrderToDatabase(user.uid, cart, total);
+      // Save order to database collection 'orders'
+      // containing: userId, items, totalBill, status: 'received', paymentMethod, paymentStatus, and timestamp
+      const docId = await saveOrderToDatabase(user.uid, cart, total, paymentMethod, paymentStatus);
       if (docId) {
         orderId = docId;
       }
@@ -99,7 +103,7 @@ function CanteenApp() {
       console.warn("Failed to push order to Firestore, recording locally:", err);
     }
 
-    const order = createOrder(orderId, cart, total, placedAt, "received");
+    const order = createOrder(orderId, cart, total, placedAt, "received", paymentMethod, paymentStatus);
     setOrders((history) => mergeOrders(history, parseHistory(localStorage.getItem(ORDERS_KEY)), [order]));
     setCart([]);
     return orderId;

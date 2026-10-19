@@ -72,6 +72,7 @@ import {
   setItemStockAvailable,
   updateOrderStatus,
   COLLEGE_HOURLY_PERIODS,
+  updateOrderPaymentStatus,
 } from "./admin";
 import { isAdminEmail, getAdminEmails, isVerifiedAdminUser } from "./auth-validation";
 import type { Order } from "./history";
@@ -273,6 +274,39 @@ describe("revenue and sales analytics calculations", () => {
     expect(secondItem.id).toBe(1); // 2x Masala Dosa
     expect(secondItem.quantitySold).toBe(2);
   });
+
+  it("aggregates orders and revenue by payment method correctly", () => {
+    const orders: Order[] = [
+      {
+        id: "p-1",
+        items: [{ id: 1, qty: 1 }],
+        total: 100,
+        placedAt: "2026-10-18T10:00:00.000Z",
+        status: "completed",
+        paymentMethod: "upi",
+        paymentStatus: "paid",
+      },
+      {
+        id: "p-2",
+        items: [{ id: 2, qty: 1 }],
+        total: 60,
+        placedAt: "2026-10-18T11:00:00.000Z",
+        status: "received",
+        paymentMethod: "counter",
+        paymentStatus: "pending",
+      },
+    ];
+
+    const metrics = calculateAnalyticsMetrics(orders);
+    expect(metrics.ordersByPaymentMethod.upi).toBe(1);
+    expect(metrics.ordersByPaymentMethod.counter).toBe(1);
+
+    expect(metrics.revenueByPaymentMethod.upi).toBe(100);
+    expect(metrics.revenueByPaymentMethod.counter).toBe(60);
+
+    expect(metrics.paidRevenue).toBe(100);
+    expect(metrics.pendingCounterRevenue).toBe(60);
+  });
 });
 
 describe("dynamic menu stock overrides", () => {
@@ -385,6 +419,28 @@ describe("Firestore functions (updateOrderStatus & setItemStockAvailable)", () =
     const result = await setItemStockAvailable(2, true);
     expect(result[2]).toBe(true);
     expect(JSON.parse(localStorage.getItem("canteen-menu-stock") || "{}")[2]).toBe(true);
+  });
+
+  it("updateOrderPaymentStatus writes new paymentStatus to Firestore orders and updates local storage", async () => {
+    const initialOrders = [
+      { id: "ord-pay-1", total: 100, placedAt: "2026-10-18T10:00:00.000Z", items: [{ id: 1, qty: 1 }], paymentStatus: "pending" },
+    ];
+    localStorage.setItem("canteen-orders", JSON.stringify(initialOrders));
+
+    await updateOrderPaymentStatus("ord-pay-1", "paid");
+
+    expect(mockDoc).toHaveBeenCalledWith(expect.anything(), "orders", "ord-pay-1");
+    expect(mockUpdateDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "orders/ord-pay-1", id: "ord-pay-1" }),
+      {
+        paymentStatus: "paid",
+        updatedAt: "MOCK_TIMESTAMP",
+      }
+    );
+
+    const updated = JSON.parse(localStorage.getItem("canteen-orders") || "[]");
+    expect(updated[0].paymentStatus).toBe("paid");
+    expect(dispatchSpy).toHaveBeenCalled();
   });
 });
 

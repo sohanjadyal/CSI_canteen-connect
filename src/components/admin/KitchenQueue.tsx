@@ -7,6 +7,7 @@ import {
   ORDER_STATUS_FLOW,
   ORDER_STATUS_LABELS,
   updateOrderStatus,
+  updateOrderPaymentStatus,
   type OrderStatus,
 } from "../../lib/admin";
 
@@ -32,12 +33,20 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
     ready: orders.filter((o) => normalizeOrderStatus(o.status) === "ready").length,
     completed: orders.filter((o) => normalizeOrderStatus(o.status) === "completed").length,
     cancelled: orders.filter((o) => normalizeOrderStatus(o.status) === "cancelled").length,
+    unpaidOrders: orders.filter((o) => {
+      const s = normalizeOrderStatus(o.status);
+      const isUnpaid = o.paymentStatus !== "paid";
+      return s !== "cancelled" && isUnpaid;
+    }).length,
   };
 
   const filteredOrders = orders.filter((order) => {
     const status = normalizeOrderStatus(order.status);
     if (filterStatus === "active") {
       if (status !== "received" && status !== "preparing" && status !== "ready") return false;
+    } else if (filterStatus === "unpaidOrders") {
+      const isUnpaid = order.paymentStatus !== "paid";
+      if (status === "cancelled" || !isUnpaid) return false;
     } else if (filterStatus !== "all" && status !== filterStatus) {
       return false;
     }
@@ -70,6 +79,15 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
     setUpdatingId(orderId);
     try {
       await updateOrderStatus(orderId, newStatus);
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  async function handleMarkPaid(orderId: string) {
+    setUpdatingId(orderId);
+    try {
+      await updateOrderPaymentStatus(orderId, "paid");
     } finally {
       setUpdatingId(null);
     }
@@ -133,10 +151,18 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
           </button>
           <button
             type="button"
+            className={`kitchen-tab ${filterStatus === "unpaidOrders" ? "active" : ""}`}
+            onClick={() => setFilterStatus("unpaidOrders")}
+          >
+            🟡 Unpaid Orders
+            <span className="tab-pill">{counts.unpaidOrders}</span>
+          </button>
+          <button
+            type="button"
             className={`kitchen-tab ${filterStatus === "received" ? "active" : ""}`}
             onClick={() => setFilterStatus("received")}
           >
-            📥 Received
+            Received
             <span className="tab-pill">{counts.received}</span>
           </button>
           <button
@@ -144,7 +170,7 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
             className={`kitchen-tab ${filterStatus === "preparing" ? "active" : ""}`}
             onClick={() => setFilterStatus("preparing")}
           >
-            🍳 Preparing
+            Preparing
             <span className="tab-pill">{counts.preparing}</span>
           </button>
           <button
@@ -152,7 +178,7 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
             className={`kitchen-tab ${filterStatus === "ready" ? "active" : ""}`}
             onClick={() => setFilterStatus("ready")}
           >
-            🔔 Ready
+            Ready for Pickup
             <span className="tab-pill">{counts.ready}</span>
           </button>
           <button
@@ -160,7 +186,7 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
             className={`kitchen-tab ${filterStatus === "completed" ? "active" : ""}`}
             onClick={() => setFilterStatus("completed")}
           >
-            ✅ Completed
+            Completed
             <span className="tab-pill">{counts.completed}</span>
           </button>
           <button
@@ -171,26 +197,12 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
             All Orders
             <span className="tab-pill">{counts.all}</span>
           </button>
-          <button
-            type="button"
-            className={`kitchen-tab ${filterStatus === "cancelled" ? "active" : ""}`}
-            onClick={() => setFilterStatus("cancelled")}
-          >
-            ❌ Cancelled
-            <span className="tab-pill">{counts.cancelled}</span>
-          </button>
         </div>
       </div>
 
       {filteredOrders.length === 0 ? (
         <div className="kitchen-empty-state">
-          <span className="empty-icon">🍳</span>
-          <h3>No orders in this view</h3>
-          <p>
-            {searchQuery
-              ? "No orders match your search query."
-              : "All caught up! New orders placed by students will appear here in real time."}
-          </p>
+          <p>No orders matching this filter.</p>
         </div>
       ) : (
         <div className="kitchen-orders-grid">
@@ -199,6 +211,8 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
             const urgent = isUrgent(order.placedAt, status);
             const nextAction = getNextActionLabel(status);
             const isBusy = updatingId === order.id;
+            const paymentMethod = order.paymentMethod || "counter";
+            const isPaid = order.paymentStatus === "paid";
 
             return (
               <article
@@ -214,6 +228,17 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
                       <span className={`order-status-badge status-${status}`}>
                         {ORDER_STATUS_LABELS[status] || status}
                       </span>
+                      {isPaid ? (
+                        <span className={`kitchen-payment-badge paid-${paymentMethod}`}>
+                          🟢 Paid ({paymentMethod === "upi" ? "UPI" : "Counter"})
+                        </span>
+                      ) : (
+                        <span className="kitchen-payment-badge collect-counter">
+                          {paymentMethod === "upi"
+                            ? `🟡 Verify UPI ₹${order.total.toFixed(2)}`
+                            : `🟡 Collect ₹${order.total.toFixed(2)} at Counter`}
+                        </span>
+                      )}
                       {urgent && <span className="urgent-badge">⏳ Waiting &gt; 15m</span>}
                     </div>
                     <div className="order-meta-info">
@@ -254,6 +279,18 @@ export default function KitchenQueue({ orders, menu = MENU }: Props) {
                         disabled={isBusy}
                       >
                         {isBusy ? "Updating..." : nextAction}
+                      </button>
+                    )}
+
+                    {!isPaid && status !== "cancelled" && (
+                      <button
+                        type="button"
+                        className="btn-mark-paid"
+                        onClick={() => handleMarkPaid(order.id)}
+                        disabled={isBusy}
+                        title="Mark payment as verified and collected"
+                      >
+                        💵 Mark Paid
                       </button>
                     )}
 

@@ -9,7 +9,9 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebase";
 import type { CartLine } from "./cart";
-import type { Order } from "./history";
+import type { Order, PaymentMethod, PaymentStatus } from "./history";
+
+export type { PaymentMethod, PaymentStatus };
 
 export interface DatabaseOrder {
   id?: string;
@@ -17,6 +19,8 @@ export interface DatabaseOrder {
   items: CartLine[];
   totalBill: number;
   status: "received" | "preparing" | "ready" | "completed" | "cancelled" | string;
+  paymentMethod: PaymentMethod;
+  paymentStatus: PaymentStatus;
   timestamp: unknown;
   placedAt?: string;
 }
@@ -28,19 +32,25 @@ export interface DatabaseOrder {
  * - items
  * - totalBill
  * - status: 'received'
+ * - paymentMethod: 'counter' | 'upi'
+ * - paymentStatus: 'pending' | 'paid' (defaults to 'pending')
  * - timestamp
  */
 export async function saveOrderToDatabase(
   userId: string,
   items: CartLine[],
-  totalBill: number
+  totalBill: number,
+  paymentMethod: PaymentMethod = "counter",
+  paymentStatus: PaymentStatus = "pending"
 ): Promise<string> {
   const placedAtIso = new Date().toISOString();
-  const orderData = {
+  const orderData: DatabaseOrder = {
     userId,
     items: items.map((line) => ({ id: line.id, qty: line.qty })),
     totalBill,
     status: "received",
+    paymentMethod,
+    paymentStatus,
     timestamp: serverTimestamp(),
     placedAt: placedAtIso,
   };
@@ -70,6 +80,14 @@ export function docToOrder(id: string, data: Record<string, unknown>): Order {
     : [];
 
   const total = typeof data.totalBill === "number" ? data.totalBill : Number(data.total) || 0;
+  const paymentMethod =
+    data.paymentMethod === "counter" || data.paymentMethod === "upi" || data.paymentMethod === "wallet"
+      ? (data.paymentMethod as PaymentMethod)
+      : undefined;
+  const paymentStatus =
+    data.paymentStatus === "pending" || data.paymentStatus === "paid"
+      ? (data.paymentStatus as PaymentStatus)
+      : undefined;
 
   return {
     id,
@@ -77,6 +95,8 @@ export function docToOrder(id: string, data: Record<string, unknown>): Order {
     total,
     placedAt,
     status: (data.status as string) || "received",
+    ...(paymentMethod ? { paymentMethod } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
   };
 }
 

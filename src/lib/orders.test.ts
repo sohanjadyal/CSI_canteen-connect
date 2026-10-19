@@ -54,4 +54,24 @@ describe("orders serialization and normalization", () => {
     expect(order.total).toBe(80);
     expect(order.status).toBe("received");
   });
+
+  it("normalizes explicit paymentMethod and paymentStatus correctly", () => {
+    const upiOrder = docToOrder("doc-upi", {
+      userId: "user-upi",
+      totalBill: 150,
+      paymentMethod: "upi",
+      paymentStatus: "paid",
+    });
+    expect(upiOrder.paymentMethod).toBe("upi");
+    expect(upiOrder.paymentStatus).toBe("paid");
+
+    const counterOrder = docToOrder("doc-counter", {
+      userId: "user-counter",
+      totalBill: 90,
+      paymentMethod: "counter",
+      paymentStatus: "pending",
+    });
+    expect(counterOrder.paymentMethod).toBe("counter");
+    expect(counterOrder.paymentStatus).toBe("pending");
+  });
 });
