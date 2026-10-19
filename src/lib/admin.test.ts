@@ -60,6 +60,10 @@ if (typeof window !== "undefined") {
 
 import {
   calculateAnalyticsMetrics,
+  calculateHourlyDistribution,
+  downloadCSV,
+  formatCSVField,
+  generateOrdersCSV,
   getEffectiveMenu,
   getNextStatus,
   isSameDay,
@@ -67,6 +71,7 @@ import {
   normalizeOrderStatus,
   setItemStockAvailable,
   updateOrderStatus,
+  COLLEGE_HOURLY_PERIODS,
 } from "./admin";
 import { isAdminEmail, getAdminEmails, isVerifiedAdminUser } from "./auth-validation";
 import type { Order } from "./history";
@@ -380,5 +385,260 @@ describe("Firestore functions (updateOrderStatus & setItemStockAvailable)", () =
     const result = await setItemStockAvailable(2, true);
     expect(result[2]).toBe(true);
     expect(JSON.parse(localStorage.getItem("canteen-menu-stock") || "{}")[2]).toBe(true);
+  });
+});
+
+describe("Hourly Rush Distribution Analytics (calculateHourlyDistribution)", () => {
+  it("generates 10 standard hourly buckets covering operating hours 08:00 to 18:00", () => {
+    const buckets = calculateHourlyDistribution([]);
+    expect(buckets).toHaveLength(10);
+    expect(buckets[0].hour).toBe(8);
+    expect(buckets[0].label).toBe("08:00 - 09:00");
+    expect(buckets[0].periodName).toBe(COLLEGE_HOURLY_PERIODS[8]); // Breakfast
+    expect(buckets[9].hour).toBe(17);
+    expect(buckets[9].label).toBe("17:00 - 18:00");
+  });
+
+  it("accurately tallies order count and completed/preparing sales revenue by hour", () => {
+    const orders: Order[] = [
+      // 08:30 (Breakfast): 2 orders, 1 completed (100), 1 preparing (50) -> count 2, rev 150
+      { id: "1", total: 100, placedAt: "2026-10-18T08:30:00.000", items: [], status: "completed" },
+      { id: "2", total: 50, placedAt: "2026-10-18T08:45:00.000", items: [], status: "preparing" },
+      // 11:15 (Morning Break): 1 order, cancelled -> count 1, rev 0
+      { id: "3", total: 80, placedAt: "2026-10-18T11:15:00.000", items: [], status: "cancelled" },
+      // 13:10 (Lunch Peak): 3 orders (total 350)
+      { id: "4", total: 120, placedAt: "2026-10-18T13:10:00.000", items: [], status: "completed" },
+      { id: "5", total: 130, placedAt: "2026-10-18T13:20:00.000", items: [], status: "completed" },
+      { id: "6", total: 100, placedAt: "2026-10-18T13:40:00.000", items: [], status: "completed" },
+    ];
+
+    const buckets = calculateHourlyDistribution(orders);
+    const bucket8 = buckets.find((b) => b.hour === 8);
+    expect(bucket8?.orderCount).toBe(2);
+    expect(bucket8?.revenue).toBe(150);
+
+    const bucket11 = buckets.find((b) => b.hour === 11);
+    expect(bucket11?.orderCount).toBe(1);
+    expect(bucket11?.revenue).toBe(0); // Cancelled order excluded from revenue
+
+    const bucket13 = buckets.find((b) => b.hour === 13);
+    expect(bucket13?.orderCount).toBe(3);
+    expect(bucket13?.revenue).toBe(350);
+  });
+
+  it("flags the peak surge hour with isPeak: true", () => {
+    const orders: Order[] = [
+      { id: "1", total: 50, placedAt: "2026-10-18T08:15:00.000", items: [], status: "completed" },
+      { id: "2", total: 50, placedAt: "2026-10-18T13:10:00.000", items: [], status: "completed" },
+      { id: "3", total: 50, placedAt: "2026-10-18T13:25:00.000", items: [], status: "completed" },
+      { id: "4", total: 50, placedAt: "2026-10-18T13:45:00.000", items: [], status: "completed" },
+      { id: "5", total: 50, placedAt: "2026-10-18T16:20:00.000", items: [], status: "completed" },
+    ];
+
+    const buckets = calculateHourlyDistribution(orders);
+    const peakBucket = buckets.find((b) => b.isPeak);
+    expect(peakBucket).toBeDefined();
+    expect(peakBucket?.hour).toBe(13); // 1:00 PM is peak with 3 orders
+    expect(peakBucket?.orderCount).toBe(3);
+  });
+
+  it("detects and flags the current operating hour bucket with isCurrentHour", () => {
+    const refDate = new Date("2026-10-18T11:42:00.000"); // 11 AM
+    const buckets = calculateHourlyDistribution([], refDate);
+
+    const currentBucket = buckets.find((b) => b.isCurrentHour);
+    expect(currentBucket).toBeDefined();
+    expect(currentBucket?.hour).toBe(11);
+    expect(currentBucket?.label).toBe("11:00 - 12:00");
+
+    const otherBuckets = buckets.filter((b) => b.hour !== 11);
+    expect(otherBuckets.every((b) => !b.isCurrentHour)).toBe(true);
+  });
+
+  it("ignores or handles out of bounds timestamps safely without error", () => {
+    const orders: Order[] = [
+      { id: "early", total: 50, placedAt: "2026-10-18T05:00:00.000", items: [], status: "completed" },
+      { id: "late", total: 50, placedAt: "2026-10-18T22:00:00.000", items: [], status: "completed" },
+      { id: "invalid", total: 50, placedAt: "invalid-date-string", items: [], status: "completed" },
+    ];
+
+    const buckets = calculateHourlyDistribution(orders);
+    expect(buckets).toHaveLength(10);
+    expect(buckets.every((b) => b.orderCount === 0)).toBe(true);
+  });
+});
+
+describe("CSV Field Escaping & Sales Report Export", () => {
+  describe("formatCSVField", () => {
+    it("handles null, undefined, and plain values without quotes", () => {
+      expect(formatCSVField(null)).toBe("");
+      expect(formatCSVField(undefined)).toBe("");
+      expect(formatCSVField(123)).toBe("123");
+      expect(formatCSVField("Order123")).toBe("Order123");
+      expect(formatCSVField("Completed")).toBe("Completed");
+    });
+
+    it("wraps values containing commas in double quotes (RFC-4180)", () => {
+      expect(formatCSVField("2x Masala Dosa, 1x Chai")).toBe('"2x Masala Dosa, 1x Chai"');
+    });
+
+    it("escapes internal quotes by doubling them and wraps in quotes", () => {
+      expect(formatCSVField('Chef\'s "Special" Dosa')).toBe('"Chef\'s ""Special"" Dosa"');
+    });
+
+    it("wraps values containing newlines in quotes", () => {
+      expect(formatCSVField("Line 1\nLine 2")).toBe('"Line 1\nLine 2"');
+      expect(formatCSVField("Line 1\r\nLine 2")).toBe('"Line 1\r\nLine 2"');
+    });
+  });
+
+  describe("generateOrdersCSV", () => {
+    const testMenu: MenuItem[] = [
+      { id: 1, name: "Masala Dosa", price: 80, category: "Meals", description: "Crispy dosa", veg: true, available: true, emoji: "🥞" },
+      { id: 2, name: "Masala Chai", price: 20, category: "Beverages", description: "Hot masala chai", veg: true, available: true, emoji: "☕" },
+      { id: 3, name: 'Chef\'s "Special" Thali, Deluxe', price: 150, category: "Meals", description: "Special royal thali", veg: true, available: true, emoji: "🍱" },
+    ];
+
+    it("generates correct header row with all specified accounting columns", () => {
+      const csv = generateOrdersCSV([], testMenu);
+      const lines = csv.split("\r\n");
+      expect(lines[0]).toBe(
+        "Order ID,Date & Timestamp,Items Summary,Subtotal (₹),Discount (₹),GST (₹),Total Paid (₹),Payment Method,Payment Status,Fulfillment Status"
+      );
+    });
+
+    it("formats order rows with safe items summary, financial reconciliation, and status", () => {
+      const orders: (Order & { paymentMethod?: string; paymentStatus?: string })[] = [
+        {
+          id: "ORD-991",
+          placedAt: "2026-10-18T12:00:00.000Z",
+          items: [
+            { id: 1, qty: 2 }, // 2x 80 = 160
+            { id: 2, qty: 1 }, // 1x 20 = 20 -> Subtotal = 180
+          ],
+          total: 189, // 180 + 5% GST (9) = 189
+          status: "completed",
+          paymentMethod: "upi",
+          paymentStatus: "paid",
+        },
+      ];
+
+      const csv = generateOrdersCSV(orders, testMenu);
+      const lines = csv.split("\r\n");
+      expect(lines).toHaveLength(2);
+
+      const dataRow = lines[1];
+      expect(dataRow).toContain("ORD-991");
+      expect(dataRow).toContain("2026-10-18T12:00:00.000Z");
+      // Items summary with comma is quoted
+      expect(dataRow).toContain('"2x Masala Dosa, 1x Masala Chai"');
+      expect(dataRow).toContain("180.00"); // Subtotal
+      expect(dataRow).toContain("0.00");   // Discount
+      expect(dataRow).toContain("9.00");   // GST (5%)
+      expect(dataRow).toContain("189.00"); // Total Paid
+      expect(dataRow).toContain("UPI");
+      expect(dataRow).toContain("PAID");
+      expect(dataRow).toContain("Completed");
+    });
+
+    it("properly escapes complex dish names containing both quotes and commas", () => {
+      const orders: (Order & { paymentMethod?: string; paymentStatus?: string })[] = [
+        {
+          id: "ORD-992",
+          placedAt: "2026-10-18T13:30:00.000Z",
+          items: [{ id: 3, qty: 1 }],
+          total: 157.5,
+          status: "ready",
+          paymentMethod: "wallet",
+          paymentStatus: "paid",
+        },
+      ];
+
+      const csv = generateOrdersCSV(orders, testMenu);
+      // Items summary should safely escape internal quotes as "" and wrap whole summary in quotes
+      expect(csv).toContain('""Special"" Thali');
+      expect(csv).toContain("WALLET");
+      expect(csv).toContain("Ready for Pickup");
+    });
+
+    it("calculates discounts when total paid reflects coupon deductions", () => {
+      const orders: (Order & { paymentMethod?: string; paymentStatus?: string })[] = [
+        {
+          id: "ORD-COUPON",
+          placedAt: "2026-10-18T14:00:00.000Z",
+          items: [{ id: 1, qty: 3 }], // 3x 80 = 240 subtotal
+          total: 199.5, // 240 - 50 discount = 190 + 5% GST (9.5) = 199.5
+          status: "completed",
+          paymentMethod: "counter",
+          paymentStatus: "pending",
+        },
+      ];
+
+      const csv = generateOrdersCSV(orders, testMenu);
+      const dataRow = csv.split("\r\n")[1];
+      expect(dataRow).toContain("240.00"); // Subtotal
+      expect(dataRow).toContain("50.00");  // Discount
+      expect(dataRow).toContain("9.50");   // GST
+      expect(dataRow).toContain("199.50"); // Total Paid
+      expect(dataRow).toContain("COUNTER");
+      expect(dataRow).toContain("PENDING");
+    });
+  });
+
+  describe("downloadCSV", () => {
+    it("safely handles non-browser environments without errors", () => {
+      const originalWindow = (globalThis as Record<string, unknown>).window;
+      delete (globalThis as Record<string, unknown>).window;
+
+      expect(() => downloadCSV("test.csv", "sample")).not.toThrow();
+
+      (globalThis as Record<string, unknown>).window = originalWindow;
+    });
+
+    it("creates a blob, triggers an anchor click, and revokes object URL in browser environment", () => {
+      vi.useFakeTimers();
+      const mockClick = vi.fn();
+      const mockLink = {
+        setAttribute: vi.fn(),
+        style: {},
+        click: mockClick,
+        parentNode: {
+          removeChild: vi.fn(),
+        },
+      };
+      const mockAppendChild = vi.fn();
+      const mockRemoveChild = vi.fn();
+
+      const originalDoc = (globalThis as Record<string, unknown>).document;
+      (globalThis as Record<string, unknown>).document = {
+        createElement: vi.fn((tag: string) => (tag === "a" ? mockLink : {})),
+        body: {
+          appendChild: mockAppendChild,
+          removeChild: mockRemoveChild,
+        },
+      };
+
+      const originalCreateObjectURL = URL.createObjectURL;
+      const originalRevokeObjectURL = URL.revokeObjectURL;
+
+      URL.createObjectURL = vi.fn(() => "blob:http://localhost/mock-uuid");
+      URL.revokeObjectURL = vi.fn();
+
+      downloadCSV("test.csv", "Order ID,Total\n1,100");
+
+      expect(URL.createObjectURL).toHaveBeenCalled();
+      expect(mockLink.setAttribute).toHaveBeenCalledWith("download", "test.csv");
+      expect(mockLink.setAttribute).toHaveBeenCalledWith("href", "blob:http://localhost/mock-uuid");
+      expect(mockClick).toHaveBeenCalled();
+
+      // Advance timers to trigger deferred cleanup
+      vi.advanceTimersByTime(1000);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:http://localhost/mock-uuid");
+
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      (globalThis as Record<string, unknown>).document = originalDoc;
+      vi.useRealTimers();
+    });
   });
 });

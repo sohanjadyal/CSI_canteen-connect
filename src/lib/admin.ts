@@ -429,3 +429,201 @@ export function getEffectiveMenu(baseMenu: MenuItem[], overrides: StockOverrides
     };
   });
 }
+
+export interface HourlyRushBucket {
+  hour: number;
+  label: string;
+  periodName?: string;
+  orderCount: number;
+  revenue: number;
+  isPeak: boolean;
+  isCurrentHour: boolean;
+}
+
+/**
+ * Common campus break and rush periods mapped to hourly operating windows
+ */
+export const COLLEGE_HOURLY_PERIODS: Record<number, string> = {
+  8: "Breakfast",
+  11: "Morning Break",
+  13: "Lunch Peak",
+  16: "Evening Snacks",
+};
+
+/**
+ * Calculates hourly order distribution across college canteen operating hours (08:00 - 18:00).
+ * Flags the peak surge hour and current hour for kitchen batch preparation.
+ */
+export function calculateHourlyDistribution(
+  orders: Order[],
+  referenceDate?: Date
+): HourlyRushBucket[] {
+  const now = referenceDate || new Date();
+  const currentHour = now.getHours();
+
+  // Operating hours: 8:00 AM (08:00) through 6:00 PM (18:00) -> 10 buckets
+  const buckets: HourlyRushBucket[] = [];
+  for (let h = 8; h <= 17; h++) {
+    const startStr = String(h).padStart(2, "0") + ":00";
+    const endStr = String(h + 1).padStart(2, "0") + ":00";
+    buckets.push({
+      hour: h,
+      label: `${startStr} - ${endStr}`,
+      periodName: COLLEGE_HOURLY_PERIODS[h],
+      orderCount: 0,
+      revenue: 0,
+      isPeak: false,
+      isCurrentHour: h === currentHour,
+    });
+  }
+
+  for (const order of orders) {
+    if (!order.placedAt) continue;
+    const orderDate = new Date(order.placedAt);
+    if (Number.isNaN(orderDate.getTime())) continue;
+
+    const orderHour = orderDate.getHours();
+    if (orderHour >= 8 && orderHour <= 17) {
+      const bucketIndex = orderHour - 8;
+      buckets[bucketIndex].orderCount += 1;
+      const status = normalizeOrderStatus(order.status);
+      if (status !== "cancelled") {
+        buckets[bucketIndex].revenue =
+          Math.round((buckets[bucketIndex].revenue + (order.total || 0)) * 100) / 100;
+      }
+    }
+  }
+
+  const maxOrders = Math.max(...buckets.map((b) => b.orderCount));
+  if (maxOrders > 0) {
+    for (const bucket of buckets) {
+      if (bucket.orderCount === maxOrders) {
+        bucket.isPeak = true;
+      }
+    }
+  }
+
+  return buckets;
+}
+
+/**
+ * RFC-4180 compliant CSV field escaping.
+ * Fields containing commas, quotes, or newlines are wrapped in quotes with internal quotes doubled.
+ */
+export function formatCSVField(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+/**
+ * Generates an RFC-4180 compliant CSV string from an array of order records.
+ * Columns: Order ID, Date & Timestamp, Items Summary, Subtotal, Discount, GST, Total Paid,
+ * Payment Method, Payment Status, Fulfillment Status.
+ */
+export function generateOrdersCSV(orders: Order[], menu: MenuItem[] = MENU): string {
+  const headers = [
+    "Order ID",
+    "Date & Timestamp",
+    "Items Summary",
+    "Subtotal (₹)",
+    "Discount (₹)",
+    "GST (₹)",
+    "Total Paid (₹)",
+    "Payment Method",
+    "Payment Status",
+    "Fulfillment Status",
+  ];
+
+  const rows: string[] = [headers.map(formatCSVField).join(",")];
+
+  for (const order of orders) {
+    let itemsSummary = "";
+    let itemsSubtotal = 0;
+
+    if (Array.isArray(order.items) && order.items.length > 0) {
+      const summaryParts: string[] = [];
+      for (const line of order.items) {
+        const item = menu.find((m) => m.id === line.id);
+        const name = item ? item.name : `Item #${line.id}`;
+        const unitPrice = item ? item.price : 0;
+        itemsSubtotal += unitPrice * line.qty;
+        summaryParts.push(`${line.qty}x ${name}`);
+      }
+      itemsSummary = summaryParts.join(", ");
+    } else {
+      itemsSummary = "No items";
+    }
+
+    const totalPaid = typeof order.total === "number" ? order.total : 0;
+    const subtotal = itemsSubtotal > 0 ? itemsSubtotal : Math.round((totalPaid / 1.05) * 100) / 100;
+    const calculatedPreTax = Math.round((totalPaid / 1.05) * 100) / 100;
+    const discount = Math.max(0, Math.round((subtotal - calculatedPreTax) * 100) / 100);
+    const taxableAmount = Math.max(0, subtotal - discount);
+    const gst = Math.round(taxableAmount * 0.05 * 100) / 100;
+
+    const rawOrder = order as Order & { paymentMethod?: string; paymentStatus?: string };
+    const paymentMethod = rawOrder.paymentMethod ? rawOrder.paymentMethod.toUpperCase() : "COUNTER";
+    const paymentStatus = rawOrder.paymentStatus
+      ? rawOrder.paymentStatus.toUpperCase()
+      : order.status === "completed"
+      ? "PAID"
+      : "PENDING";
+    const fulfillmentStatus =
+      ORDER_STATUS_LABELS[normalizeOrderStatus(order.status)] || order.status || "Received";
+
+    const row = [
+      formatCSVField(order.id),
+      formatCSVField(order.placedAt),
+      formatCSVField(itemsSummary),
+      formatCSVField(subtotal.toFixed(2)),
+      formatCSVField(discount.toFixed(2)),
+      formatCSVField(gst.toFixed(2)),
+      formatCSVField(totalPaid.toFixed(2)),
+      formatCSVField(paymentMethod),
+      formatCSVField(paymentStatus),
+      formatCSVField(fulfillmentStatus),
+    ];
+
+    rows.push(row.join(","));
+  }
+
+  return rows.join("\r\n");
+}
+
+/**
+ * Initiates browser download of CSV string as a file.
+ * Prepends UTF-8 BOM (\uFEFF) for Microsoft Excel compatibility on Windows.
+ * Uses deferred revokeObjectURL to prevent browsers from aborting the download stream.
+ */
+export function downloadCSV(filename: string, content: string): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  // Prepend UTF-8 BOM so Excel opens Hindi/special characters and currency symbols properly
+  const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename);
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+
+  // Defer cleanup so browser download manager has time to capture the blob stream
+  setTimeout(() => {
+    try {
+      if (link.parentNode) {
+        link.parentNode.removeChild(link);
+      }
+      URL.revokeObjectURL(url);
+    } catch {
+      // Ignore cleanup error if already removed
+    }
+  }, 1000);
+}
+
